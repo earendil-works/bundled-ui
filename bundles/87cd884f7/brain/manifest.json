@@ -1,0 +1,30 @@
+{
+  "version": "pi-private-87cd884f7-brain",
+  "script": "radius-pi-private-87cd884f7-app-6L5ZQ3VR.js",
+  "stylesheets": [
+    "app-4HZVU3W7.css"
+  ],
+  "commit": "87cd884f7",
+  "plugins": [
+    "artifacts",
+    "chat",
+    "chat-mode",
+    "conversations",
+    "devices",
+    "drafts",
+    "envs",
+    "login",
+    "logs",
+    "models",
+    "ports",
+    "prompt",
+    "sessions",
+    "sharing",
+    "status",
+    "subagents",
+    "terminals",
+    "voice",
+    "web-shell",
+    "workspace"
+  ]
+}

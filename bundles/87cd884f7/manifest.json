@@ -1,0 +1,19 @@
+{
+  "version": "pi-private-87cd884f7",
+  "script": "radius-pi-private-87cd884f7-app-MRAPTZZU.js",
+  "stylesheets": [
+    "app-YUBRKKZC.css"
+  ],
+  "commit": "87cd884f7",
+  "plugins": [
+    "web-shell",
+    "artifacts",
+    "chat",
+    "drafts",
+    "models",
+    "sessions",
+    "status",
+    "subagents",
+    "workspace"
+  ]
+}
