@@ -20,14 +20,24 @@ const LABEL: Record<ShareMode, string> = { view: "Read-only", full: "Read/write"
 
 const errorText = (reason: unknown): string => (reason instanceof Error ? reason.message : String(reason));
 
-/** Two links per session (read-only; read/write: send and Stop) and the guests connected now. */
+/**
+ * Two links per session (read-only; read/write: send and Stop), the people it is shared with by email, and the guests
+ * connected now. People are offered only while the brain is connected to Radius (`peopleUrl`): they open the session
+ * there, signed in with that email, in any organization.
+ */
 function ShareSheet({ session, onClose }: { session: string; onClose: () => void }) {
 	const sharing = useObject(Sharing, { session });
 	const links = useReadable(sharing?.links);
 	const guests = useReadable(sharing?.guests);
+	const people = useReadable(sharing?.people);
+	const peopleUrl = useReadable(sharing?.peopleUrl);
 	const remoteEnv = useReadable(sharing?.env);
-	const [copied, setCopied] = useState<ShareMode>();
-	const [confirming, setConfirming] = useState<{ reset: ShareMode } | { remove: string } | { remote: true }>();
+	const [copied, setCopied] = useState<ShareMode | "address">();
+	const [email, setEmail] = useState("");
+	const [personMode, setPersonMode] = useState<ShareMode>("view");
+	const [confirming, setConfirming] = useState<
+		{ reset: ShareMode } | { remove: string } | { remote: true } | { share: string }
+	>();
 	const [error, setError] = useState<string>();
 	useEffect(() => {
 		if (!copied) return;
@@ -60,11 +70,33 @@ function ShareSheet({ session, onClose }: { session: string; onClose: () => void
 			setError(errorText(reason));
 		}
 	};
+	/** Shares with the typed email; read/write on a remote environment is confirmed first. */
+	const share = async (address: string, remoteConfirmed = false) => {
+		if (!sharing) return;
+		setError(undefined);
+		if (personMode === "full" && remoteEnv && !remoteConfirmed) {
+			setConfirming({ share: address });
+			return;
+		}
+		try {
+			await sharing.share({ email: address, mode: personMode, ...(remoteConfirmed ? { remoteConfirmed } : {}) });
+			setEmail("");
+		} catch (reason) {
+			setError(errorText(reason));
+		}
+	};
+	const copyAddress = async () => {
+		if (peopleUrl && (await copyText(peopleUrl))) setCopied("address");
+	};
 	const confirm = () => {
 		if (!sharing || !confirming) return;
 		setConfirming(undefined);
 		if ("remote" in confirming) {
 			void copy("full", true);
+			return;
+		}
+		if ("share" in confirming) {
+			void share(confirming.share, true);
 			return;
 		}
 		const action =
@@ -82,6 +114,20 @@ function ShareSheet({ session, onClose }: { session: string; onClose: () => void
 			Cancel
 		</button>
 	);
+	/** Remove, confirmed in place: for a link guest (blocked from the session) or a person (shared no more). */
+	const removal = (id: string) =>
+		confirming && "remove" in confirming && confirming.remove === id ? (
+			<span className="inline-form">
+				<button type="button" className="text-action danger" onClick={confirm}>
+					Remove
+				</button>
+				{cancel}
+			</span>
+		) : (
+			<button type="button" className="text-action" onClick={() => setConfirming({ remove: id })}>
+				Remove
+			</button>
+		);
 	return (
 		<Sheet title="Share" onClose={onClose}>
 			<p className="muted small">
@@ -138,6 +184,75 @@ function ShareSheet({ session, onClose }: { session: string; onClose: () => void
 					);
 				})}
 			</div>
+			{peopleUrl && (
+				<div className="list">
+					<span className="label">People</span>
+					<p className="muted small">
+						Share with someone's email; they open this session in Radius, signed in with that address.
+					</p>
+					<form
+						className="inline-form"
+						onSubmit={(event) => {
+							event.preventDefault();
+							if (email.trim()) void share(email.trim());
+						}}
+					>
+						<input
+							className="input"
+							type="email"
+							aria-label="Email"
+							placeholder="Email"
+							autoComplete="off"
+							value={email}
+							onChange={(event) => setEmail(event.target.value)}
+						/>
+						<select
+							className="input"
+							aria-label="Access"
+							value={personMode}
+							onChange={(event) => setPersonMode(event.target.value as ShareMode)}
+						>
+							<option value="view">{LABEL.view}</option>
+							<option value="full">{LABEL.full}</option>
+						</select>
+						<button type="submit" className="button" disabled={!email.trim()}>
+							Share
+						</button>
+					</form>
+					{confirming && "share" in confirming && (
+						<div className="share-row">
+							<span className="muted small">
+								{confirming.share} can run commands on "{remoteEnv}". Share read/write?
+							</span>
+							<button type="button" className="text-action danger" onClick={confirm}>
+								Share
+							</button>
+							{cancel}
+						</div>
+					)}
+					{people?.map((person) => (
+						<div className="guest-row" key={person.id}>
+							<span>
+								{person.name}{" "}
+								<small className="muted">· {person.mode === "full" ? "read/write" : "read-only"}</small>
+							</span>
+							{removal(person.id)}
+						</div>
+					))}
+					{people && people.length > 0 && (
+						<div className="share-row">
+							<span className="muted small">Send them this session's address in Radius.</span>
+							<button
+								type="button"
+								className={`button ${copied === "address" ? "done" : ""}`}
+								onClick={() => void copyAddress()}
+							>
+								{copied === "address" ? "Copied" : "Copy address"}
+							</button>
+						</div>
+					)}
+				</div>
+			)}
 			<div className="list">
 				<span className="label">Connected</span>
 				{guests && !guests.length && <p className="empty-note">No guests connected.</p>}
@@ -147,18 +262,7 @@ function ShareSheet({ session, onClose }: { session: string; onClose: () => void
 							{guest.name}{" "}
 							<small className="muted">· {guest.mode === "full" ? "read/write" : "read-only"}</small>
 						</span>
-						{confirming && "remove" in confirming && confirming.remove === guest.id ? (
-							<span className="inline-form">
-								<button type="button" className="text-action danger" onClick={confirm}>
-									Remove
-								</button>
-								{cancel}
-							</span>
-						) : (
-							<button type="button" className="text-action" onClick={() => setConfirming({ remove: guest.id })}>
-								Remove
-							</button>
-						)}
+						{removal(guest.id)}
 					</div>
 				))}
 			</div>

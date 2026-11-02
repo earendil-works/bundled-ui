@@ -2,7 +2,7 @@ import { memo, type ReactNode, useEffect, useState, useSyncExternalStore } from 
 import type { SearchResults } from "../../plugins/search/contract.ts";
 import type { Session } from "../../plugins/sessions/contract.ts";
 import type { Child } from "../../plugins/subagents/contract.ts";
-import type { Grant } from "../runtime/access.ts";
+import { type Grant, grantMode } from "../runtime/access.ts";
 export type SessionSummary = Session & {
 	subagents: Child[];
 	/** `unread`: a finished answer the owner has not read on any device (see `SessionReads`). */
@@ -251,14 +251,20 @@ export const Drawer = memo(function Drawer({
 				<p className="empty-note">
 					Joined as <strong>{guest.name}</strong>
 					<br />
-					{guest.mode === "full" ? "Read/write" : "Read-only"}
+					{/* The open session's access: sessions may be shared with a guest in different modes. */}
+					{grantMode(guest, activeId) === "full" ? "Read/write" : "Read-only"}
 				</p>
 				<div className="session-scroll">
 					{sessions.map((session) => (
-						<SessionRow key={session.id} session={session} conversationId={conversationId} onOpen={onOpen}>
+						<SessionRow
+							key={session.id}
+							session={session}
+							conversationId={session.id === activeId ? conversationId : 1}
+							onOpen={onOpen}
+						>
 							<button
 								type="button"
-								className={`session-main ${conversationId === 1 ? "active" : ""}`}
+								className={`session-main ${session.id === activeId && conversationId === 1 ? "active" : ""}`}
 								onClick={() => onOpen(session.id)}
 							>
 								<span className="session-title">{session.title}</span>

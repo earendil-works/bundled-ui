@@ -2,7 +2,7 @@
 
 import { isChordError, type Ref } from "@earendil-works/chord";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import { Access } from "../../src/runtime/access.ts";
+import { Access, grantMode } from "../../src/runtime/access.ts";
 import { defineFacet, expectVariant, inVariant } from "../../src/runtime/chord.ts";
 import { expandComposerText } from "../../src/runtime/composer.ts";
 import { contribute } from "../../src/runtime/contribute.ts";
@@ -544,7 +544,7 @@ function SessionChat({ sessionId, conversationId }: { sessionId: string; convers
 	const writer = inVariant(chat, "participant");
 	// Who may write decides what shows (as Pi Mobile's `canWrite`), not whether the chat object is live yet: during a
 	// load, a cold start or a reconnect the composer stays and only Send waits.
-	const canWrite = owner || grant?.mode === "full";
+	const canWrite = owner || grantMode(grant, sessionId) === "full";
 	const subagentControl = useObject(
 		SubagentControl,
 		canWrite && child && !oneShot ? { session: sessionId } : undefined,
@@ -1320,8 +1320,9 @@ function Main() {
 	const ended = useShareEnded();
 	const access = useObject(Access, {});
 	const grant = useReadable(inVariant(access, "guest")?.grant);
+	// A guest stays within the sessions shared with it; anywhere else it lands in the one shared or joined last.
 	useEffect(() => {
-		if (grant && route.session !== grant.session) void nav.replace(conversationRoute(route, grant.session), route);
+		if (grant && !grantMode(grant, route.session)) void nav.replace(conversationRoute(route, grant.session), route);
 	}, [grant, route, nav]);
 	if (ended) return <ShareEnded />;
 	return route.session ? (

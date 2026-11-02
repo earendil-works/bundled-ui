@@ -1,5 +1,5 @@
 import { useRef, useState } from "react";
-import { Access } from "../runtime/access.ts";
+import { Access, grantMode } from "../runtime/access.ts";
 import { inVariant } from "../runtime/chord.ts";
 import { closeLayers, Slot, useDrawer, useObject, useReadable, useRoute, useStatus } from "../runtime/web.tsx";
 import { useComposerState } from "./composer-state.tsx";
@@ -13,7 +13,8 @@ export function AppLayout() {
 		collapsed = useSidebarCollapsed();
 	const access = useObject(Access, {}),
 		guest = useReadable(inVariant(access, "guest")?.grant);
-	const canWrite = (useStatus(access) === "live" && access?.variant === "owner") || guest?.mode === "full";
+	const canWrite =
+		(useStatus(access) === "live" && access?.variant === "owner") || grantMode(guest, route.session) === "full";
 	const { addFiles } = useComposerState();
 	const [draggingFiles, setDraggingFiles] = useState(false);
 	const dragDepth = useRef(0);

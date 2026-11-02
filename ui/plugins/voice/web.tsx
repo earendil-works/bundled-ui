@@ -6,7 +6,7 @@
 // A read/write guest talks (its transcripts are its own messages) but hears nothing yet: the answers are read aloud only
 // in the owner's browser. View-only guests have no voice mode. Only when the server has a speech service (voice.json).
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import { Access } from "../../src/runtime/access.ts";
+import { Access, grantMode } from "../../src/runtime/access.ts";
 import { defineFacet, inVariant, type RefIn } from "../../src/runtime/chord.ts";
 import { contribute } from "../../src/runtime/contribute.ts";
 import {
@@ -168,12 +168,16 @@ function MicIcon({ muted = false, size = 18 }: { muted?: boolean; size?: number 
 	);
 }
 
-/** Whether this browser may use voice mode: the owner, or a guest with full access (a view-only guest only reads). */
+/**
+ * Whether this browser may use voice mode in the open session: the owner, or a guest with full access to it (a
+ * view-only guest only reads).
+ */
 function useTalker(): { owner: boolean; talker: boolean } {
 	const owner = useOwner();
+	const { session } = useRoute();
 	const access = useObject(Access, {});
 	const grant = useReadable(inVariant(access, "guest")?.grant);
-	return { owner, talker: owner || grant?.mode === "full" };
+	return { owner, talker: owner || grantMode(grant, session) === "full" };
 }
 
 /** The voice mode switch of a conversation (the owner's variant or a guest's) and its shared voice. */

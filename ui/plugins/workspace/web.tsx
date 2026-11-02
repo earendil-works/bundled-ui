@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Access } from "../../src/runtime/access.ts";
+import { Access, grantMode } from "../../src/runtime/access.ts";
 import { defineFacet, inVariant } from "../../src/runtime/chord.ts";
 import { contribute } from "../../src/runtime/contribute.ts";
 import { Slots, useNavigation, useObject, useReadable, useRoute, useStatus } from "../../src/runtime/web.tsx";
@@ -19,7 +19,8 @@ function WorkspaceButton() {
 	const access = useObject(Access, {});
 	const grant = useReadable(inVariant(access, "guest")?.grant);
 	const status = useStatus(access);
-	if (!route.session || status !== "live" || (access?.variant !== "owner" && grant?.mode !== "full")) return null;
+	if (!route.session || status !== "live" || (access?.variant !== "owner" && grantMode(grant, route.session) !== "full"))
+		return null;
 	return (
 		<button
 			type="button"
@@ -49,7 +50,7 @@ function WorkspacePanel() {
 		!route.session ||
 		!route.workspace ||
 		status !== "live" ||
-		(access?.variant !== "owner" && grant?.mode !== "full")
+		(access?.variant !== "owner" && grantMode(grant, route.session) !== "full")
 	)
 		return null;
 	return (
