@@ -1,6 +1,7 @@
 # bundled-ui
 
-Prebuilt bundles of the shared Pi web UI (pi-private `apps/p2`), loaded by Radius Cloud Brain and by p2 brains.
+The shared Pi web UI: its source (`ui/`, see [ui/README.md](ui/README.md)) and prebuilt bundles, loaded by Radius
+Cloud Brain and by p2 brains. p2 no longer has the UI source; `ui/` is the only copy.
 Temporary: replace once Pi publishes the UI bundle itself.
 
 Each build lives in `bundles/<pi-private commit>/`, in two variants:
@@ -24,8 +25,8 @@ this repo is public): the build script drops them.
 
 ## Build a new bundle
 
-With `pi-private` and `bundled-ui` checked out side by side, from a pi-private commit that still has p2's web UI
-(the last one is `87cd884f7`):
+With `pi-private` and `bundled-ui` checked out side by side, in a pi-private checkout whose `apps/p2` has the web UI
+(`87cd884f7`, or a later commit with `ui/` copied over `apps/p2`, see `ui/README.md`):
 
 ```sh
 cd pi-private/apps/p2
