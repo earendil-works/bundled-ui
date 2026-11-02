@@ -1,0 +1,19 @@
+{
+  "version": "pi-private-397cf99fc",
+  "script": "radius-pi-private-397cf99fc-app-PSV7XM6A.js",
+  "stylesheets": [
+    "app-YUBRKKZC.css"
+  ],
+  "commit": "397cf99fc",
+  "plugins": [
+    "web-shell",
+    "artifacts",
+    "chat",
+    "drafts",
+    "models",
+    "sessions",
+    "status",
+    "subagents",
+    "workspace"
+  ]
+}
