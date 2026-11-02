@@ -454,7 +454,7 @@ describe("voice interruption by words", () => {
 			interruption.tick();
 			interruption.interim("Hmm.");
 			assert.deepEqual(did, [], final);
-			assert.deepEqual(interruption.final(final), { send: false, stopped: false }, final);
+			assert.deepEqual(interruption.final(final), { text: undefined, stopped: false }, final);
 			assert.deepEqual(did, ["drop stream"], final);
 		}
 	});
@@ -463,17 +463,21 @@ describe("voice interruption by words", () => {
 		const { interruption, did } = setup();
 		interruption.trigger();
 		interruption.speechStart();
+		assert.equal(interruption.pending, false, "the room heard speech: it is the speaker's utterance");
 		interruption.interim("Wait");
 		assert.deepEqual(did, ["cut speech", "stop run"]);
-		assert.equal(interruption.pending, false, "a confirmed candidate is the speaker's utterance");
 		interruption.interim("Wait, use the other file");
 		assert.deepEqual(did, ["cut speech", "stop run"], "once per utterance");
-		assert.deepEqual(interruption.final("Wait, use the other file."), { send: true, stopped: true });
+		assert.deepEqual(interruption.final("Wait, use the other file."), {
+			text: "Wait, use the other file.",
+			stopped: true,
+		});
 		assert.deepEqual(did, ["cut speech", "stop run"]);
 	});
 
 	it("stops a silently working agent at the first words, without waiting for the end of the utterance", () => {
 		const { interruption, did } = setup({ speaking: false });
+		interruption.speechStart();
 		interruption.interim("Um");
 		assert.deepEqual(did, []);
 		interruption.interim("Actually, no");
@@ -484,38 +488,83 @@ describe("voice interruption by words", () => {
 		const { interruption, did } = setup();
 		interruption.trigger();
 		interruption.speechStart();
-		assert.deepEqual(interruption.final("No, the other one."), { send: true, stopped: true });
+		assert.deepEqual(interruption.final("No, the other one."), { text: "No, the other one.", stopped: true });
 		assert.deepEqual(did, ["cut speech", "stop run"]);
+	});
+
+	it("sends a dictation the service split as one message, never stopping the run of its first half", () => {
+		// The service ends an utterance at 30 s and the next one starts before the first one's final arrives.
+		const { interruption, did, current } = setup({ speaking: false, busy: false });
+		interruption.speechStart();
+		interruption.interim("First I want you to");
+		interruption.speechStart();
+		assert.deepEqual(interruption.final("First I want you to look at the logs,"), {
+			text: undefined,
+			stopped: false,
+		});
+		// The second half's words belong to the second utterance; nothing ran for the first, nothing is stopped.
+		interruption.interim("and then");
+		assert.deepEqual(interruption.final("and then restart it."), {
+			text: "First I want you to look at the logs, and then restart it.",
+			stopped: false,
+		});
+		assert.deepEqual(did, []);
+		// While the agent works: the first half stops it once, the second half does not stop again.
+		current.busy = true;
+		interruption.speechStart();
+		interruption.interim("No wait");
+		interruption.speechStart();
+		assert.deepEqual(interruption.final("No wait, not that one."), { text: undefined, stopped: false });
+		interruption.interim("Use the other");
+		assert.deepEqual(interruption.final("Use the other file."), {
+			text: "No wait, not that one. Use the other file.",
+			stopped: true,
+		});
+		assert.deepEqual(did, ["stop run"]);
+		// A held half whose continuation is noise goes alone.
+		interruption.speechStart();
+		interruption.speechStart();
+		assert.deepEqual(interruption.final("Check the build."), { text: undefined, stopped: false });
+		assert.deepEqual(interruption.final(""), { text: "Check the build.", stopped: true });
 	});
 
 	it("in chat mode cuts the speech for anyone's words, and stops the run only when they are for the agent", () => {
 		const chat = setup({ chatMode: true });
+		chat.interruption.speechStart();
 		chat.interruption.interim("lunch at noon?");
 		assert.deepEqual(chat.did, ["cut speech"]);
 		const addressed = setup({ chatMode: true, speaking: false });
+		addressed.interruption.speechStart();
 		addressed.interruption.interim("lunch at noon?");
 		assert.deepEqual(addressed.did, []);
-		assert.deepEqual(addressed.interruption.final("lunch at noon?"), { send: true, stopped: false });
+		assert.deepEqual(addressed.interruption.final("lunch at noon?"), { text: "lunch at noon?", stopped: false });
+		addressed.interruption.speechStart();
 		addressed.interruption.interim("Pi, stop that");
 		assert.deepEqual(addressed.did, ["stop run"]);
 		// People talking over the agent cut its speech; the agent's name later in the same utterance stops its run.
 		const later = setup({ chatMode: true });
+		later.interruption.speechStart();
 		later.interruption.interim("lunch at noon?");
 		later.interruption.interim("lunch at noon? Pi, stop that");
 		assert.deepEqual(later.did, ["cut speech", "stop run"]);
 		const stop = setup({ chatMode: true, speaking: false });
+		stop.interruption.speechStart();
 		stop.interruption.interim("Stop.");
 		assert.deepEqual(stop.did, ["stop run"]);
 	});
 
-	it("forgets a candidate when the room's connection ends", () => {
+	it("forgets the utterances in progress when the room's connection ends, returning what was held", () => {
 		const { interruption, did, advance } = setup();
 		interruption.trigger();
-		interruption.reset();
+		assert.deepEqual(interruption.reset(), { text: undefined, stopped: false });
 		advance(CANDIDATE_START_MS * 2);
 		interruption.tick();
 		assert.deepEqual(did, []);
 		assert.equal(interruption.pending, false);
+		interruption.speechStart();
+		interruption.speechStart();
+		interruption.final("Keep this.");
+		assert.deepEqual(interruption.reset(), { text: "Keep this.", stopped: true });
 	});
 });
 

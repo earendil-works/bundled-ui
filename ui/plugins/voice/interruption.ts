@@ -11,6 +11,11 @@
 //   people talking with each other cut the agent's speech, never its work). This holds while the agent only works
 //   too: the speaker no longer waits for the end of the utterance.
 // - A final without such words is dropped: never sent as a message, and nothing was interrupted.
+// - Utterances overlap on the wire: the next one's `speech_start` often arrives before the previous one's final (its
+//   decode takes a moment; the service also splits speech at 30 s). So the state is kept per utterance, in order: a
+//   final belongs to the oldest open one, interim transcripts to the newest. A final whose next utterance has already
+//   started is held and sent joined with it: one dictation is one message, never stopping the run of its own first
+//   half.
 //
 // A service without interim transcripts interrupts at the final (after the utterance), by the same rule.
 import { isStopCommand } from "./speech-text.ts";
@@ -84,19 +89,24 @@ export function isEcho(text: string, said: readonly string[]): boolean {
 	return words.every((word) => known.has(word));
 }
 
+/** One utterance the room reported (`speech_start`) and has not finished (`final`): what it did already, once each. */
+type Utterance = { candidate: boolean; cut: boolean; stopped: boolean };
+
 export class Interruption {
 	readonly #deps: InterruptionDeps;
-	/** A barge-in trigger not yet confirmed: when it fired, and whether the room has reported speech since. */
-	#candidate: { at: number; heard: boolean } | undefined;
-	/** What this utterance did already: each happens once per utterance. */
-	#cut = false;
-	#stopped = false;
+	/** A barge-in trigger the room has not reported speech for yet: when it fired. */
+	#candidate: { at: number } | undefined;
+	/** Utterances started and not yet final, oldest first. */
+	readonly #utterances: Utterance[] = [];
+	/** Finals held for the utterance that followed them without a pause (with whether they stopped the run). */
+	readonly #held: string[] = [];
+	#heldStopped = false;
 
 	constructor(deps: InterruptionDeps) {
 		this.#deps = deps;
 	}
 
-	/** A candidate streams and waits for words: the microphone keeps streaming while the agent speaks. */
+	/** A candidate streams and waits for the room to hear speech: the microphone keeps streaming while the agent speaks. */
 	get pending(): boolean {
 		return this.#candidate !== undefined;
 	}
@@ -104,59 +114,79 @@ export class Interruption {
 	/** The barge-in detector fired: its stream starts, nothing is interrupted yet. */
 	trigger(): void {
 		if (this.#candidate) return;
-		this.#candidate = { at: this.#now(), heard: false };
+		this.#candidate = { at: this.#now() };
 		this.#deps.log("barge-in candidate: streaming, waiting for words");
 	}
 
-	/** The room heard speech start. */
+	/** The room heard speech start: a new utterance (the candidate's, if one waits). */
 	speechStart(): void {
-		if (this.#candidate) this.#candidate.heard = true;
+		this.#utterances.push({ candidate: this.#candidate !== undefined, cut: false, stopped: false });
+		this.#candidate = undefined;
 	}
 
 	/** Called with each microphone frame: a candidate the room never heard as speech is dropped. */
 	tick(): void {
 		const candidate = this.#candidate;
-		if (!candidate || candidate.heard || this.#now() - candidate.at < CANDIDATE_START_MS) return;
+		if (!candidate || this.#now() - candidate.at < CANDIDATE_START_MS) return;
+		this.#candidate = undefined;
 		this.#drop("no speech heard");
 	}
 
 	/** An interim transcript of the utterance in progress. */
 	interim(text: string): void {
-		this.#consider(text);
+		const current = this.#utterances.at(-1);
+		if (current) this.#consider(text, current);
 	}
 
 	/**
-	 * The utterance's final transcript: whether it is a message to send (words, and not the agent's own heard back),
-	 * and whether this utterance stopped the run. It interrupts first if its interim transcripts did not.
+	 * The oldest open utterance's final transcript. `text`: what to send now, if anything (words, not the agent's own
+	 * heard back; with the finals held for it); `stopped`: whether those utterances stopped the run. It interrupts first
+	 * if its interim transcripts did not. Held when the next utterance already started.
 	 */
-	final(text: string): { send: boolean; stopped: boolean } {
-		const candidate = this.#candidate;
-		const send = meaningful(text) && (this.#cut || this.#stopped || !this.#echo(text));
-		if (send) this.#consider(text);
-		else if (candidate) this.#drop(text.trim() ? "no words, or the agent's own" : "nothing recognized");
+	final(text: string): { text: string | undefined; stopped: boolean } {
+		const utterance = this.#utterances.shift() ?? { candidate: false, cut: false, stopped: false };
+		const words = meaningful(text) && (utterance.cut || utterance.stopped || !this.#echo(text, utterance));
+		if (words) this.#consider(text, utterance);
+		else if (utterance.candidate) this.#drop(text.trim() ? "no words, or the agent's own" : "nothing recognized");
 		else if (text.trim()) this.#deps.log(`final dropped: no words (${text.trim().length} chars)`);
-		const stopped = this.#stopped;
-		this.reset();
-		return { send, stopped };
+		if (words) {
+			this.#held.push(text);
+			this.#heldStopped ||= utterance.stopped;
+		}
+		// Still talking: what was said goes with what follows.
+		if (this.#utterances.length > 0) {
+			if (words) this.#deps.log("final held: the next utterance already started");
+			return { text: undefined, stopped: false };
+		}
+		return this.#release();
 	}
 
-	/** Forgets the utterance in progress (the room's connection ended, the microphone was muted). */
-	reset(): void {
+	/**
+	 * Forgets the utterances in progress (the room's connection ended, the microphone was muted); held finals are
+	 * returned to be sent.
+	 */
+	reset(): { text: string | undefined; stopped: boolean } {
 		this.#candidate = undefined;
-		this.#cut = false;
-		this.#stopped = false;
+		this.#utterances.length = 0;
+		return this.#release();
 	}
 
-	#consider(text: string): void {
-		if (!meaningful(text) || (!this.#cut && !this.#stopped && this.#echo(text))) return;
+	#release(): { text: string | undefined; stopped: boolean } {
+		const text = this.#held.length > 0 ? this.#held.splice(0).join(" ") : undefined;
+		const stopped = this.#heldStopped;
+		this.#heldStopped = false;
+		return { text, stopped };
+	}
+
+	#consider(text: string, utterance: Utterance): void {
+		if (!meaningful(text) || (!utterance.cut && !utterance.stopped && this.#echo(text, utterance))) return;
 		const state = this.#deps.state();
 		const addressed = voiceMessage(text, state.chatMode, state.agentName).interrupts || isStopCommand(text);
-		const cut = state.speaking && !this.#cut;
-		const stop = state.busy && addressed && !this.#stopped;
-		this.#candidate = undefined;
+		const cut = state.speaking && !utterance.cut;
+		const stop = state.busy && addressed && !utterance.stopped && !this.#heldStopped;
 		if (!cut && !stop) return;
-		this.#cut ||= cut;
-		this.#stopped ||= stop;
+		utterance.cut ||= cut;
+		utterance.stopped ||= stop;
 		this.#deps.log(
 			`interrupted by speech: ${[cut && "speech cut", stop && "run stopped"].filter(Boolean).join(", ")}`,
 		);
@@ -164,16 +194,16 @@ export class Interruption {
 		if (stop) this.#deps.stopRun();
 	}
 
-	/** Words heard while the agent speaks (or a candidate streams) that are all the agent's own. */
-	#echo(text: string): boolean {
+	/** Words heard while the agent speaks (or from a barge-in candidate) that are all the agent's own. */
+	#echo(text: string, utterance: Utterance): boolean {
 		const state = this.#deps.state();
-		return (state.speaking || this.#candidate !== undefined) && isEcho(text, state.said());
+		return (state.speaking || utterance.candidate) && isEcho(text, state.said());
 	}
 
 	#drop(reason: string): void {
-		this.#candidate = undefined;
 		this.#deps.log(`barge-in candidate dropped (${reason}); the agent goes on`);
-		this.#deps.dropStream();
+		// An utterance in progress (or a new candidate) keeps the stream and the room's VAD.
+		if (this.#utterances.length === 0 && !this.#candidate) this.#deps.dropStream();
 	}
 
 	#now(): number {

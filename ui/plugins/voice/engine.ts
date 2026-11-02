@@ -94,6 +94,11 @@ const micAudioConstraints: ExtendedMicAudioConstraints = {
 };
 /** A sentence whose speech has not ended this long after it was asked for is given up (the room queues them). */
 const SPEAK_TIMEOUT_MS = 120_000;
+/**
+ * How many of the owner's sentences wait in the room at a time; the rest wait here. The room refuses more than 32
+ * pending, and an answer committed at once can bring more: each refused sentence was a gap in the speech.
+ */
+const MAX_IN_ROOM = 8;
 /** How long `AudioContext.resume()` may take before the audio counts as blocked (it stays pending without a gesture). */
 const RESUME_WAIT_MS = 1500;
 /** How long the last transcript and a passing error stay visible. */
@@ -222,6 +227,8 @@ export class VoiceEngine {
 	#baseline: Baseline | undefined;
 	/** Utterances asked for (the owner's) or started in the room, and not ended, with their give-up timers. */
 	readonly #outstanding = new Map<string, ReturnType<typeof setTimeout>>();
+	/** The owner's sentences not yet sent to the room (MAX_IN_ROOM are there), in order. */
+	readonly #unsent: { id: string; text: string }[] = [];
 	/** Each utterance's sample rate, from its `tts_start`. */
 	readonly #rates = new Map<string, number>();
 	/** Answers (by key) whose speech this browser no longer plays: talked over, tapped, superseded. */
@@ -337,7 +344,7 @@ export class VoiceEngine {
 		if (muted) {
 			this.#send({ type: "reset" });
 			this.#bargeInDetector.resetStreaming();
-			this.#interruption.reset();
+			this.#forgetUtterances();
 			this.#userSpeaking = false;
 		}
 		this.#update();
@@ -643,7 +650,7 @@ export class VoiceEngine {
 			this.#log(`socket closed: ${event.code} ${event.reason}`);
 			this.#socket = undefined;
 			this.#userSpeaking = false;
-			this.#interruption.reset();
+			this.#forgetUtterances();
 			this.#bargeInDetector.resetStreaming();
 			this.#talking.clear();
 			// What the room was saying ends with it (a new socket gets the current utterance in its welcome).
@@ -719,8 +726,11 @@ export class VoiceEngine {
 			this.#log(`speech_start${this.#speaking() ? " (while speaking)" : ""}`);
 			this.#userSpeaking = true;
 			this.#interruption.speechStart();
-		} else if (event.type === "speech_end") this.#log("speech_end");
-		else if (event.type === "interim") {
+		} else if (event.type === "speech_end") {
+			// The next utterance may start before this one's final arrives: speaking follows the VAD, not the finals.
+			this.#log("speech_end");
+			this.#userSpeaking = false;
+		} else if (event.type === "interim") {
 			this.#log(`interim: ${event.text.length} chars, decoded in ${event.ms} ms`);
 			this.#interruption.interim(event.text);
 		} else if (event.type === "error") {
@@ -729,21 +739,25 @@ export class VoiceEngine {
 			if (event.code === "mic_rate") this.#log(`room: ${event.message}`);
 			else this.#report(event.message);
 		} else if (event.type === "final") {
-			this.#userSpeaking = false;
 			const text = event.text.trim();
 			this.#log(`final: ${text.length} chars, decoded in ${event.ms} ms`);
-			// Words, or nothing: noise and the agent's own speech heard back are never sent (interruption.ts).
-			const { send, stopped } = this.#interruption.final(text);
-			if (send) {
-				this.#hear(text);
-				this.#deliver(text, stopped);
-			}
+			// Words, or nothing: noise and the agent's own speech heard back are never sent; a final the next utterance
+			// already follows waits for it (interruption.ts).
+			const message = this.#interruption.final(text);
+			if (message.text) this.#deliver(message.text, message.stopped);
 		}
 		this.#update();
 	}
 
+	/** Forgets the utterances in progress; what was held of them is still this person's message. */
+	#forgetUtterances(): void {
+		const held = this.#interruption.reset();
+		if (held.text) this.#deliver(held.text, held.stopped);
+	}
+
 	/** A final transcript with words: a stop command, or this person's message. */
 	#deliver(text: string, stopped: boolean): void {
+		this.#hear(text);
 		// "Stop" whose interim already stopped the agent is still a stop, not a message.
 		if (isStopCommand(text) && (stopped || this.#busy || this.#speaking())) {
 			this.#log("stop command: stopping");
@@ -926,7 +940,7 @@ export class VoiceEngine {
 	}
 
 	#speaking(): boolean {
-		return this.#playback.speaking || this.#outstanding.size > 0;
+		return this.#playback.speaking || this.#outstanding.size > 0 || this.#unsent.length > 0;
 	}
 
 	/** Has the room say the `answer`'s next sentence (the owner's), under its stable ID. */
@@ -939,10 +953,21 @@ export class VoiceEngine {
 			this.#log(`sentence ${id}: room not connected, skipped`);
 			return;
 		}
-		this.#expect(id);
-		this.#send({ type: "speak", id, text });
-		this.#log(`sentence ${id}: ${text.length} chars, asked`);
+		this.#unsent.push({ id, text });
+		this.#sendSentences();
 		this.#update();
+	}
+
+	/** Sends waiting sentences while the room holds fewer than MAX_IN_ROOM of them. */
+	#sendSentences(): void {
+		while (this.#outstanding.size < MAX_IN_ROOM) {
+			const next = this.#unsent.shift();
+			if (!next) return;
+			const { id, text } = next;
+			this.#expect(id);
+			this.#send({ type: "speak", id, text });
+			this.#log(`sentence ${id}: ${text.length} chars, asked`);
+		}
 	}
 
 	/** An utterance to wait for (asked, or started in the room), given up if it never ends. */
@@ -972,13 +997,15 @@ export class VoiceEngine {
 		if (!this.#outstanding.delete(id)) return;
 		this.#rates.delete(id);
 		this.#log(`sentence ${id}: ${result}`);
+		if (this.#socket?.readyState === WebSocket.OPEN) this.#sendSentences();
 		this.#endStreamWhenDone();
 		this.#update();
 	}
 
 	/** Nothing more to say for now (no utterance pending, no answer still streaming): the stream ends as it plays out. */
 	#endStreamWhenDone(): void {
-		if (this.#outstanding.size > 0 || this.#chunkers.size > 0 || !this.#playback.speaking) return;
+		if (this.#outstanding.size > 0 || this.#unsent.length > 0 || this.#chunkers.size > 0 || !this.#playback.speaking)
+			return;
 		void this.#playback.finishPcmStream();
 	}
 
@@ -990,6 +1017,7 @@ export class VoiceEngine {
 		if (room && this.#producer() && this.#outstanding.size > 0) this.#send({ type: "cancel" });
 		for (const timer of this.#outstanding.values()) clearTimeout(timer);
 		this.#outstanding.clear();
+		this.#unsent.length = 0;
 		this.#rates.clear();
 		if (bargeIn) this.#playback.cancelSpeechForBargeIn();
 		else this.#playback.cancelSpeech(reason);
