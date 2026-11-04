@@ -1,0 +1,30 @@
+{
+  "version": "pi-eebd5d90c-brain",
+  "script": "radius-pi-eebd5d90c-app-OQ75FSIJ.js",
+  "stylesheets": [
+    "app-WPUJR6OL.css"
+  ],
+  "commit": "eebd5d90c",
+  "plugins": [
+    "artifacts",
+    "chat",
+    "chat-mode",
+    "conversations",
+    "devices",
+    "drafts",
+    "envs",
+    "login",
+    "logs",
+    "models",
+    "ports",
+    "prompt",
+    "sessions",
+    "sharing",
+    "status",
+    "subagents",
+    "terminals",
+    "voice",
+    "web-shell",
+    "workspace"
+  ]
+}

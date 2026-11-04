@@ -1,0 +1,19 @@
+{
+  "version": "pi-eebd5d90c",
+  "script": "radius-pi-eebd5d90c-app-7CV2DNTM.js",
+  "stylesheets": [
+    "app-YUBRKKZC.css"
+  ],
+  "commit": "eebd5d90c",
+  "plugins": [
+    "web-shell",
+    "artifacts",
+    "chat",
+    "drafts",
+    "models",
+    "sessions",
+    "status",
+    "subagents",
+    "workspace"
+  ]
+}
